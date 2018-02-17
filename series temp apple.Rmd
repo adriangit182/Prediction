@@ -1,0 +1,437 @@
+---
+title: "Predicción Apple para series temporales"
+author: "Adrián Benítez"
+toc: true
+output: html_notebook
+---
+
+En este ejercicio procederemos a realizar una predicción sobre la serie temporal de ventas de Apple. En primer lugar veremos como predicen los modelos de ETS, luego los ARIMA y, para acabar, haremos una comparación de ambos.
+
+#ETS
+
+Vamos a exportar los datos y ver las seis primeras filas para obtener una idea de a qué nos enfrentamos:
+
+```{r}
+library(quantmod)
+require(xts)
+library(moments)
+library(ggplot2)
+library(ggfortify)
+library(plyr)
+library(forecast)
+data<-read.csv("./MDSF_Prediccion-master/sesion05/apple.csv")
+head(data)
+```
+
+Podemos  ver que hay valores missing, debido a que ciertos productos se empezaron a producir mas tarde que otros y que algunos ya no se producen.
+
+Veamos como está compuesto el data frame.
+
+```{r}
+str(data)
+```
+
+No creo que su composición de problemas a la hora de crear el modelo.
+
+Procedamos con la unión de todas las ventas para poder crear nuestro modelo.
+
+```{r}
+data[is.na(data)]<-0
+data1<-data$ventas
+data1$ventas<-apply(data[,c(3:6)], 1, sum)
+ventas=as.xts(ts(data1$ventas, start = c(1998, 4) , frequency = 4))
+```
+
+Con la unión de las ventas y la serie temporal creada vamos a convertirla a formato zoo para poder trabajar con ella.
+
+```{r}
+zventas<-as.zoo(ventas)
+names(zventas)="Ventas"
+```
+
+Una vez convertida a zoo podemos crear el primer plot.
+
+```{r}
+autoplot(zventas)+ggtitle("Ventas Trimestrales de Apple")+xlab("Trimestres")+ylab("Ventas")
+```
+
+El autoplot muestra la serie temporal por trimestres, de la que se pueden destacar aspectos importantes. En primer lugar se puede ver que existe tendencia positiva, ya que las ventas han ido aumentando a partir de 2004-2005 y sobre todo en 2011-2012, donde se ve que hay un crecimiento abismal.
+
+Por otro lado, podemos decir que hay heterocedasticidad, ya que la varianza no es constante, las ventas de iphone se disparan y distorsionan bastante la serie, haciendo que la variación aumente. También se puede ver una estacionalidad bastante fuerte que coincide con el cuarto trimestre y continua en elprimero, muy seguramente generado por el periodo navideño dónde se compraran la mayor parte de este tipo de productos.  
+
+```{r}
+ggfreqplot(as.ts(zventas),freq=4,nrow=1,facet.labeller=c("1T","2T","3T","4T"))+ggtitle("Ventas Trimestrales")
+```
+
+En el grafico de frecuencias trimestrales podemos ver como el primer trimestre muestra unas ventas muy altas, pero el segundo y el tercero caen, volviendo a subir en el cuarto y el primero.
+
+Pasemos a crear el modelo que llegue hasta el cuarto trimestre de 2014.
+
+```{r}
+cOmit=5
+nObs=length(zventas)
+oventas <- window(zventas,start=index(zventas[1]),end=index(zventas[nObs-cOmit]))
+```
+
+He quitado los últimos 5 periodos para qudarme con el subset que llega hasta el final de 2014.
+
+Ahora veamos como afectan los ajustes manuales sobre el modelo:
+
+```{r}
+fit1 <- ses(oventas)
+fit2 <- holt(oventas)
+fit3 <- holt(oventas,exponential=TRUE)
+fit4 <- holt(oventas,damped=TRUE)
+fit5 <- holt(oventas,exponential=TRUE,damped=TRUE)
+```
+
+```{r}
+plot(fit5, type="o", ylab="Ventas",  flwd=1, plot.conf=FALSE)
+lines(window(zventas),type="o")
+lines(fit1$mean,col=2)
+lines(fit2$mean,col=3)
+lines(fit3$mean,col=4)
+lines(fit4$mean,col=5)
+legend("topleft", lty=1, pch=1, col=1:6,
+       c("Data","SES","Holt's","Multiplicative",
+         "Additive Damped","Multiplicative Damped"))
+```
+
+Los ajustes de suavización muestran que (poniendo la predicción multiplicativa suavizad como plot) que el ajuste 1 y 2 son bastante malos para predecir, pero los otros tres no se alejan tanto de la predicción.
+
+Pero veamos ahora como funciona el modelo ETS con Holt-Winters, que no solo analiza tendencia y suavizado, sino que además introduce una función para analizar la estacionalidad.
+
+```{r}
+fit6 <- hw(oventas,seasonal="additive")
+fit7 <- hw(oventas,seasonal="multiplicative")
+```
+
+```{r}
+plot(fit7,ylab="Ventas",
+     plot.conf=FALSE, type="o", fcol="white", xlab="Year")
+lines(window(zventas),type="o",col="blue")
+lines(fitted(fit6), col="red", lty=2)
+lines(fitted(fit7), col="green", lty=2)
+lines(fit6$mean, type="o", col="red")
+lines(fit7$mean, type="o", col="green")
+legend("topleft",lty=1, pch=1, col=1:3, 
+       c("data","Holt Winters' Additive","Holt Winters' Multiplicative"))
+```
+
+La gráfica de predicción de Holt-Winters para fit6 (aditivo) y fit7 (multiplicativo) se ajustan mucho mejor que los anteriores ajustes.
+
+Veamos estos dos ajustes por niveles:
+
+```{r}
+states <- cbind(fit6$model$states[,1:3],fit7$model$states[,1:3])
+colnames(states) <- c("level","slope","seasonal","level","slope","seasonal")
+plot(states, xlab="Year")
+fit6$model$state[,1:3]
+fitted(fit6)
+fit6$mean
+```
+
+Por un lado podemos ver los valores que da el modelo aditivo a su componente de suavización, tendencial y estacional, además de el valor que da con ellos a cada año y sus cuatrimestres junto a los 2 años que predice.
+
+Por otro lado, en los gráficos por niveles, podemos ver como el modelo multiplicativo empieza a variar cuando la tendencia empieza a aumentar. Y el modelo aditivo, sin embargo, mantiene una estacionalidad constante mientras la tendencia sube.
+
+Una vez hemos distinguido el modelo aditivo y multiplicativo podemos comparar los slope, la forma del slope del modelo multiplicativo comparada con la tendencia son bastante similares, lo cual implica que comparten información. En el modelo aditivo no se parecen tanto, lo cual implica que el modelo aditivo es mejor.
+
+Creamos el modelo ETS:
+
+```{r}
+etsfit<-ets(oventas)
+fventas.ets=forecast(etsfit)
+summary(fventas.ets)
+```
+
+El modelo ETS más ajustado es el modelo con error multiplicativo, aditivo en tendencia y multiplicativo en estacionalidad.
+
+Tambien podemos ver los valores que reciben la suavización, la tendencia y la estacionalidad (en el último caso uno por trimestre). 
+
+Podemos ver que la precisión del error no ha sido del todo mala al ver que los errores muestran valores relativamente bajos.
+
+Y por último aparecen los intervalos de confianza de las predicciones.
+
+Gráficamente:
+
+```{r}
+plot(fventas.ets)
+lines(window(zventas),type="o")
+```
+
+Ajusta muy bien al principio del modelo, pero pasado el tercer trimestre diverge bastante de los datos reales. A la vez sus intervalos de confianza se abren más.
+
+Veamos ahora la diferemcia con los valores reales.
+
+```{r}
+matrix(c(fventas.ets$mean[1:cOmit],zventas[(nObs-cOmit+1):nObs]),ncol=2)
+```
+
+Como podemos ver los valores predichos por el modelo ETS son algo mayores que los reales, y aun que en los 2 primeros trimestres no se alejan mucho de la realidad en el siguiente trimestre los superan notablemente.
+
+Veamos ahora el modelo amortiguado.
+
+```{r}
+etsfit2<-ets(oventas,damped=TRUE)
+fventas.ets2=forecast(etsfit2)
+summary(fventas.ets2)
+```
+
+El modelo con tendencia aditiva amortiguada es igual que es muy parecido anterior, entra el parametro phi para que el modelo sea amortiguado.
+
+Los criterios de selección (Akaike y Schwarz) muestra como mejor modelo al ETS sin amortiguar.
+
+Gráficamente:
+
+```{r}
+plot(fventas.ets2)
+lines(window(zventas),type="o")
+```
+
+Greficamente es práticamente igual que el modelo sin amortiguar.
+
+Así que lo mejor es comparar los datos y valores.
+
+```{r}
+matrix(c(fventas.ets2$mean[1:cOmit],fventas.ets$mean[1:cOmit],zventas[(nObs-cOmit+1):nObs]),ncol=3)
+```
+
+Podemos ver como los 3 primeros trimestres están mejor ajustados en el modelo sin amortiguar, pero en el cuarto ya se empieza a igualar el modelo amortiguado y sin amortiguar. Por lo cual sigue siendo mejor el modelo sin amortiguar.
+
+Si ponemos las gráficas juntas no podemos notar las diferencias entre modelos, ya que se superponen al haber muy poca diferencia.
+
+```{r}
+plot(fventas.ets2)
+lines(window(zventas),type="o")
+lines(fventas.ets$mean,type="o",col="red")
+```
+
+Con lo cual podemos concluir que el mejor modelo es el MAM sin amortiguar, ya que muestra un resultado más ajustado y unos mejores valores en criterio de selección.
+
+Voy a crear dos modelos más, hw1 y hw2, para ver si Holt-Winters hace una mejor predicción que ETS.
+
+```{r}
+hw1=hw(oventas, seasonal="additive", damped=T)
+hw2=hw(oventas, seasonal="multiplicative", damped=T)
+fventas.hw1=forecast(hw1)
+fventas.hw2=forecast(hw2)
+mat<-matrix(c(fventas.hw1$mean[1:cOmit],fventas.hw2$mean[1:cOmit],fventas.ets2$mean[1:cOmit],fventas.ets$mean[1:cOmit],zventas[(nObs-cOmit+1):nObs]),ncol=5)
+mat
+```
+
+```{r}
+summary(hw1)
+summary(hw2)
+```
+
+Aun que los criterios de información generados por estos últimos Holt-Winters son peores, ya que utiliza otros metodos de optimización, parece que muestra mejores resultados a la hora de predecir los datos.
+
+```{r}
+mat<-as.data.frame(mat)
+error1<-sum(mat$V1-mat$V5)
+error2<-sum(mat$V2-mat$V5)
+error3<-sum(mat$V3-mat$V5)
+error4<-sum(mat$V4-mat$V5)
+diferror<-cbind(error1,error2,error3,error4)
+diferror
+```
+
+Por lo tanto si debemos atender a la diferencias que se producen entre los datos y los modelos creados las diferencias de Holt-Winters son menores que las de ETS, más en concreto el modelo Holt-Winters multiplicativo amortiguado sería el mejor.
+
+También no podemos fijar en las medidas absolutas y relativas de error.
+
+```{r}
+accuracy(etsfit)
+accuracy(etsfit2)
+accuracy(hw1)
+accuracy(hw2)
+```
+
+Si nos fijamos en el MAE (medida absoluta) podemos decir que el modelo hw2 es mejor que el resto, pero si lo hacemos en medidas relativas como MAPE, el modelo etsfit2 sería el mejor, seguido por el etsfit.
+
+```{r}
+plot(fventas.hw2)
+lines(window(zventas),type="o")
+lines(fventas.ets$mean,type="o",col="red")
+lines(fventas.hw1$mean,type="o",col="green")
+lines(fventas.ets2$mean,type="o", col="yellow")
+```
+
+#ARIMA
+
+Veamos desde el punto de vista de los modelos ARIMA como manipular la serie.
+
+```{r}
+df <- data.frame(value = as.vector(zventas),
+                     time = time(zventas))
+ggplot(df)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ylab("Ventas")+ggtitle("Ventas Trimestrales de Apple")+xlab("Trimestres")
+```
+
+Como ya dijimos antes, la serie es heterocedástica, tiene tendencia (no estacionaria en media y varianza) y estacionalidad. Se podría añadir también que puede que haya cierto componente cíclico.
+
+```{r}
+logventas=log(zventas)
+df2 <- data.frame(value = as.vector(logventas),
+                     time = time(logventas))
+ggplot(df2)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ylab("Ventas")+ggtitle("Crecimiento Ventas Trimestrales de Apple")+xlab("Trimestres")
+
+```
+
+Para poder hacer la serie estacionaria y poder trabajar con ella hay que realizar Box-Cox, en este caso he aplicado la transformación logaritmica a la serie.
+
+Pasemos a ver la autocorrelación y la correlación parcial de la serie.
+
+```{r}
+library(forecast)
+library(ggplot2)
+tsdisplay(logventas)
+```
+
+Como podemos ver en el gráfico, la serie tiene claramente un componente autoregresivo, es decir, que la serie tiene un retardo (p=1), generado por la depdendencia con el momento anterior dentro de la serie. Podemos ver el componente autoregresivo debido a que la gráfica de autocorrelación es descendiente y que la gráfica de autocorrelación parcial muestra un valor por encima.
+
+Como la serie no es estacionaria se aplica la primera diferencia.
+
+```{r}
+tsdisplay(diff(logventas))
+```
+
+Si dejasemos así la serie sería un Random Walk, ya que constaría solo de un autorregresivo más el error. Pero como podemos observar en el nuevo gráfico se puede ver como han aparecido valores altos en la gráfica de autocorrelación. Estos valores se van repitiendo cada cuatro meses, es decir, que habrá que aplicar una parte estacional a la serie para poder crear el modelo ARIMA óptimo. Esto surge debido a que las ventas de Apple tienen un fuerte factor estacional.
+
+```{r}
+tsdisplay(diff(logventas,4))
+```
+
+Con la diferencia estacional añadida podemos ver como la serie empieza a mejorar en varianza y en retrocesos, sin embargo sigue sin ser del todo estacionaria y los gráfico de autocorrelación y autocorrelación parcial muestran que aun no hay ruido blanco. De esta forma vamos a añadir una diferencia más a la parte estacional para ver si mejora el aspecto.
+
+```{r}
+tsdisplay(diff(diff(logventas,4),1))
+```
+
+Este ultimo cuadro muestra una mejor situación con algo parecido a un ARIMA (1,0,0)(0,1,0)4, pero no podemos asegurar que los residuos sean ruido blanco. 
+
+```{r}
+var(logventas)
+var(diff(logventas))
+var(diff(logventas,4))
+var(diff(diff(logventas,4),1))
+```
+
+Las varianzas van disminuyendo a medida que añadimos diferencias.
+
+Pero abandonemos el analisis tradicional para ver que es lo que dice R sobre la serie.
+
+```{r}
+cOmit=5
+nObs=length(zventas)
+oventas <- window(zventas,start=index(zventas[1]),end=index(zventas[nObs-cOmit]))
+```
+
+Al igual que en el caso anterior cogemos los años que queremos predecir (desde el último cuatrimestre de 2014 en adelante).
+
+```{r}
+fit.arima=auto.arima(oventas,lambda=0)
+summary(fit.arima)
+```
+
+En este caso he hecho que lambda sea cero para que haga Box-Cox utilizando la transformación logarítmica. El modelo ARIMA que ha creado R es (1,0,0)(1,1,0)4, autoregresivo de orden 1 (p=1), con estacionalidad trimestral, autoregresivo de orden 1 en la parte estacional (P=1) y una diferencia en la parte estacional (D=1).
+
+Por otro lado podemos ver los valores de los coeficientes de los autoregresivos phi minúscula = 0.91 y phi mayúscula = -0.38.
+
+Los criterios de selección muestran valores muy bajas, es un buen modelo.
+
+Veamos los gráficos de correlación y autorrelación parcial. 
+
+```{r}
+tsdisplay(fit.arima$residuals)
+```
+
+Los gráficos están mucho mejor ajustados que antes y la serie es estacionaria en media y varianza. Y no hay ruido blanco aparente.
+
+```{r}
+Box.test(fit.arima$residuals,lag=4, fitdf=3, type="Lj")
+Box.test(fit.arima$residuals,lag=8, fitdf=3, type="Lj")
+Box.test(fit.arima$residuals,lag=12, fitdf=3, type="Lj")
+```
+
+Si aplicamos el test de Box-Ljung para analizar si los residuos son ruido blanco o no podemos ver como el primer trimestre acepta la hipotesis nula de que son ruido blanco al 1% pero no al 5%, ya que el p-valor es de 2.4%. Sin embargo, los trimestres posteriores si que aceptan la hipótesis nula. 
+
+Creamos otro modelo ARIMA para ver que resultado nos da si no aplicamos lambda igual a cero
+
+```{r}
+fit.arima2=auto.arima(oventas)
+summary(fit.arima2)
+```
+
+En este caso crea un ARIMA (0,1,1)(0,1,0)4, es decir, un modelo con media movil de orden 1 con una diferencia, estacionalidad trimestral y un diferencia en la parte estacional.
+
+El criterio de selección es mucho peor que en el modelo anterior.
+
+```{r}
+tsdisplay(fit.arima2$residuals)
+Box.test(fit.arima2$residuals,lag=4, fitdf=3, type="Lj")
+Box.test(fit.arima2$residuals,lag=8, fitdf=3, type="Lj")
+Box.test(fit.arima2$residuals,lag=12, fitdf=3, type="Lj")
+```
+
+Parece ser que no se puede aceptar al mismo nivel que con el otro modelo los residuos, pero al 1% se aceptan siempre.
+
+Predicción:
+
+```{r}
+fventas.arima=forecast(fit.arima)
+
+plot(fventas.arima)
+lines(window(zventas), type = "o") 
+
+
+fventas.arima
+```
+
+Obtenemos los valores predichos y sus intervalos de confianza.
+
+La gráfica de predicción del modelo ARIMA y su zona de intervalos muestra unos valores bastante ajustados con los valores reales.
+
+```{r}
+fventas.arima2=forecast(fit.arima2)
+fventas.arima2
+```
+
+Es interesante ver que los resultados obtenindos no varian mucho en comparación con el modelo anterior.
+
+Comparemos los datos predichos con los reales.
+
+```{r}
+matrix(c(fventas.arima$mean[1:cOmit],fventas.arima2$mean[1:cOmit],zventas[(nObs-cOmit+1):nObs]),ncol=3)
+```
+
+El primer modelo ARIMA es bastante mejor que el segundo modelo.
+
+#Comparación
+
+Comparemos los datos del modelo hw2 (el modelo multiplicativo amortiguado).
+
+```{r}
+matrix(c(fventas.arima$mean[1:cOmit],fventas.hw2$mean[1:cOmit],zventas[(nObs-cOmit+1):nObs]),ncol=3)
+```
+
+En este caso el modelo ARIMA es más exacto a la hora de predecir.
+
+Si miramos los errores:
+
+```{r}
+accuracy(etsfit)
+accuracy(etsfit2)
+accuracy(hw2)
+accuracy(fit.arima)
+```
+
+Como podemos ver el modelo ARIMA muestra un error de precisión mayor en todo los casos que el modelo HW y ETS, pero predice mejor los datos existentes.
+
+```{r}
+plot(fventas.arima)
+lines(window(zventas), type = "o") 
+lines(fventas.hw2$mean, type="o",col="red")
+```
+
+Si vemos la gráfica de predicción de ARIMA contra hw2 vemos como el modelo ARIMA se ajusta mejor a los datos reales.

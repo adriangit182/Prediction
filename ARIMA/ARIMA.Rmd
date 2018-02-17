@@ -1,0 +1,371 @@
+---
+title: "Ejercicio 3"
+Author: "Adrián Benítez"
+output: 
+  html_document: 
+    theme: cerulean
+    toc: yes
+---
+#Análisis de la serie principal
+
+```{r}
+data <- read.csv2("Ejercicio_031.csv", sep=";")
+```
+
+Una vez tenemos los datos los convertimos a xts.
+
+```{r, message=FALSE, warning=FALSE}
+library(forecast)
+require(xts)
+library(ggplot2)
+data1 <- as.xts(ts(data[,2], start = c(1960, 2) , frequency = 12))
+```
+
+Convertimos a zoo.
+
+```{r}
+zserie1<-as.zoo(data1)
+names(zserie1)="serie"
+```
+
+Graficamente.
+
+```{r, warning=FALSE, message=FALSE}
+autoplot(zserie1) + 
+  ggtitle("Matriculaciones mensuales") +
+  xlab("Fecha")+ylab("Matriculaciones")
+```
+
+Podemos ver que la serie es heteroscedástica, tiene tendencia y parte estacional.
+
+```{r}
+tsdisplay(zserie1)
+```
+
+Como vemos por los residuos de la autocrrelación parcial y como decrece la autocorrelación se podría pensar que estamos antes un modelo autorregresivo.
+
+Si añadimos diferencias.
+
+```{r}
+tsdisplay(diff(zserie1))
+```
+
+Aquí podemos ver la estacionalidad anual.
+
+Añadimos una diferencia anual para la estacionalidad.
+
+```{r}
+tsdisplay(diff(zserie1, 12))
+```
+
+Ahora podemos ver más claramente los residuos que hay que mejorar para convertirlo en ruido blanco (AR de orden 2-3 podría ser).
+
+No voy a trabajar con xts para que no me de problemas a la hora de crear la predicción del Arimax.
+
+```{r}
+data[,1]<- seq(as.Date('1960-02-01'), length.out = nrow(data), by='month')
+dataprueba <- data[-c(673:683),]
+dataprueba2 <- data[-c(1:673),]
+```
+
+dataprueba y dataprueba2 son el train y el test que utilizaré para el modelo.
+
+```{r}
+arima1=Arima(log(dataprueba[,2]), 
+              lambda = 0,
+              order = c(1,1,0),
+              seasonal = list(order = c(2,1,0), period= 12))
+summary(arima1)
+```
+
+```{r, echo=FALSE}
+tsdisplay(arima1$residuals)
+```
+
+Tras esta primera prueba podemos ver que el modelo necesita una parte de media movil.
+
+```{r}
+arima2=Arima(log(dataprueba[,2]), 
+              lambda = 0,
+              order = c(2,1,2),
+              seasonal = list(order = c(2,1,1), period= 12))
+summary(arima2)
+```
+```{r, echo=FALSE}
+tsdisplay(arima2$residuals)
+```
+
+Vamos a comprobar si hay atípicos provocando ruido
+
+```{r, message=FALSE, warning=FALSE}
+library(TSA)
+detectAO(arima2)
+detectIO(arima2)
+```
+
+Como vemos hay varios atípicos relevantes, voy a deshacer los atípicos introduciendolos como regresores externeos.
+
+```{r}
+arima3=Arima(log(dataprueba[,2]), 
+              lambda = 0,
+              order = c(2,1,2),
+              seasonal = list(order = c(2,1,1), period= 12),
+              xreg = data.frame(
+                outlier1 = 1*(dataprueba$X19601==dataprueba$X19601[312]),
+                outlier2 = 1*(dataprueba$X19601==dataprueba$X19601[396]),
+                outlier3 = 1*(dataprueba$X19601==dataprueba$X19601[606])
+              ))
+summary(arima3)
+```
+
+```{r}
+tsdisplay(arima3$residuals)
+```
+
+```{r}
+detectAO(arima3)
+detectIO(arima3)
+```
+
+Aparecen nuevo outliers y residuos siguen sin ser ruido blanco.
+
+```{r}
+Box.test(arima3$residuals,lag=4, fitdf=3, type="Lj")
+Box.test(arima3$residuals,lag=8, fitdf=3, type="Lj")
+Box.test(arima3$residuals,lag=12, fitdf=3, type="Lj")
+```
+
+Vamos a ver como predice el modelo, ya que, los residuos, aun sin estar dentro de los limites, tienen valores muy bajos.
+
+```{r}
+farima3 <- forecast(arima3, xreg=data.frame(
+                 outlier1 = 1*(dataprueba$X19601==dataprueba$X19601[312]),
+                 outlier2 = 1*(dataprueba$X19601==dataprueba$X19601[369]),
+                 outlier3 = 1*(dataprueba$X19601==dataprueba$X19601[606])))
+farima3 <- as.data.frame(farima3)
+farima3 <- farima3[c(1:10),]
+farima3$Mes <- dataprueba2[,1]
+matrix(c(farima3[,1],log(dataprueba2[,2])),ncol=2)
+```
+
+Como vemos el test de predicción sigue, más o menos, los valores reales de cerca
+
+```{r}
+ggplot()+
+  geom_line(aes(data[,1], log(data[,2]), colour ="Serie real"), data)+
+  geom_line(aes(x=farima3[,6], y=farima3[,1], colour = "Predicción"), farima3)
+```
+
+Graficamente parece bastante ajustado, el probelma es que al haber tantas observaciones no se puede ver bien la diferencia.
+
+#Función de transferencias y efecto del crédito
+
+Vamos a crear un Arimax para introducir la función de transferencia para el crédito a las familias.
+
+```{r}
+data2 <- data[c(516:683),]
+data2[,3] <- as.numeric(data2[,3])
+```
+
+Ahora tenemos las muestra con el crédito para poder crear la función de transferencias.
+
+```{r}
+ggplot(data2, mapping = aes(x = data2[,1], y = data2[,3])) +
+  geom_line()+
+  ggtitle("Credito mensual") +
+  xlab("Fecha")+ylab("Credito a las familias")
+```
+
+Ahora conocemos como se mueve el crédito, no parece tener tendencia, pero si que es heteroscedástico y tiene estacionalidad.
+
+```{r}
+mat.l <- log(data2[,2])
+cred.l <- log(data2[,3])
+```
+
+Veamos la estacionalidad.
+
+```{r}
+tsdisplay(cred.l)
+```
+
+```{r}
+tsdisplay(diff(cred.l))
+```
+
+Parece que la estacionalidad podría ser trimestral.
+
+```{r}
+tsdisplay(diff(diff(cred.l, 4),1))
+```
+
+Parece que añadir la diferencia trimestral no ayuda.
+
+Veamos la regresión dinámica.
+
+```{r, message=FALSE, warning=FALSE}
+library(Hmisc)
+library(dynlm)
+library(pander)
+
+mod0=dynlm(mat.l ~ L(cred.l, 1) + L(cred.l, 4) + L(cred.l, 12))
+pander(mod0)
+```
+
+Como vemos solo la diferencia se acepta en la regresión dinámica.
+
+```{r}
+arimax1 <- arimax(mat.l,
+              order = c(2,1,2),
+              include.mean = TRUE,
+              seasonal = list(order = c(2,1,1), period= 12),
+              xtransf = cred.l,
+              transfer = list(c(1,3)),
+              method = "ML"
+              )
+summary(arimax1)
+```
+
+Podemos ver como los coeficientes autorregresivos de la parte estacional ya no son muy altos, esto se debe a la reducción de la muestra temporal. Por otro lado la media movil de la función de trans ferencia también tiene valores muy bajos.
+
+```{r}
+tsdisplay(arimax1$residuals)
+```
+
+Como vemos los residuos parecen ruido blanco.
+
+```{r}
+plot(arimax1$coef[8:11],type="h")
+```
+
+Como vemos por el valor de los coeficientes en la gráfica solo el primer coeficiente de la función de transferencia (AR1) es dignificativo.
+
+Vamos a quitar la parte autoregresiva estacional de paso y añadimos un AR más, que los coeficientes son muy altos y los residuos muestran que sobre sale un valor.
+
+```{r}
+arimax2 <- arimax(mat.l,
+              order = c(3,1,2),
+              include.mean = TRUE,
+              seasonal = list(order = c(1,1,1), period= 12),
+              xtransf = cred.l,
+              transfer = list(c(1,0)),
+              method = "ML"
+              )
+summary(arimax2)
+```
+
+```{r}
+detectAO(arimax2)
+detectIO(arimax2)
+```
+
+Voy a eliminar el IO.
+
+```{r}
+arimax3 <- arimax(mat.l,
+              order = c(3,1,2),
+              include.mean = TRUE,
+              seasonal = list(order = c(1,1,1), period= 12),
+              xtransf = cred.l,
+              transfer = list(c(1,0)),
+              method = "ML",
+              io = c(91)
+              )
+summary(arimax3)
+```
+
+Este ARIMAX tiene el error más reducido de los 3 y menor AIC.
+
+Evidentemente, el crédito influye, ya que el coeficiente T1-AR1 afecta a la serie.
+
+```{r}
+tsdisplay(arimax3$residuals)
+```
+
+#Predicción
+
+```{r}
+arima4=Arima(log(data[,2]), 
+              lambda = 0,
+              order = c(2,1,2),
+              seasonal = list(order = c(2,1,1), period= 12),
+              xreg = data.frame(
+                outlier1 = 1*(data$X19601==data$X19601[312]),
+                outlier2 = 1*(data$X19601==data$X19601[396]),
+                outlier3 = 1*(data$X19601==data$X19601[606])
+              ))
+summary(arima4)
+```
+
+Empeora un poco contra la muestra train el autoregresivo estacional de orden 2.
+
+```{r}
+farima4 <- forecast(arima4, h = 20, xreg=data.frame(
+                 outlier1 = 1*(data$X19601==data$X19601[312]),
+                 outlier2 = 1*(data$X19601==data$X19601[369]),
+                 outlier3 = 1*(data$X19601==data$X19601[606])))
+farima4 <- as.data.frame(farima4)
+vector<-seq(as.POSIXct("2017-01-01"), as.POSIXct("2018-12-1"), "months")
+farima4 <- farima4[c(1:24),]
+farima4$Mes <- as.Date(vector)
+dates <- matrix(nrow=24, ncol=3)
+dates <- as.data.frame(dates)
+colnames(data) <- c("1","2","3")
+colnames(dates) <- c("1", "2", "3")
+datae <- rbind(data, dates) 
+datae[,1]<- seq(as.Date('1960-02-01'), length.out = nrow(datae), by='month')
+```
+
+```{r, warning=FALSE}
+ggplot()+
+  geom_line(aes(datae[,1], log(datae[,2]), colour ="Serie"), datae)+
+  geom_line(aes(x=farima4[,6], y=farima4[,1], colour = "Predicción"), farima4)
+```
+
+Como vemos la predicción sin crédito parece bastante buena.
+
+Con el ARIMAX también podriamos hacer una predicción, pero como no consigo saber como predecir con el pueo crear un arima con regresor  externo, que no será igual de bueno, pero servirá.
+
+```{r}
+arimareg = Arima(log(data2[,2]), 
+              lambda = 0,
+              order = c(3,1,2),
+              seasonal = list(order = c(1,1,1), period= 12),
+              xreg = data.frame(
+                credito = log(data2[,3])
+              ))
+summary(arimareg)
+```
+
+Como podemos apreciar por el coeficiente de crédito al meterlo como regresor externo el coeficiente es insignificativo, mientras que en transferencias si que mostraba significatividad.
+
+```{r}
+tsdisplay(arimareg$residuals)
+```
+
+```{r}
+farimareg <- forecast(arimareg, h = 12, xreg=data.frame(
+                 credito = log(data2[,3])))
+farimareg <- as.data.frame(farimareg)
+vector2<-seq(as.POSIXct("2017-01-01"), as.POSIXct("2017-6-1"), "months")
+farimareg <- farimareg[c(1:6),]
+farimareg$Mes <- as.Date(vector2)
+dates2 <- matrix(nrow=6, ncol=3)
+dates2 <- as.data.frame(dates)
+colnames(data2) <- c("1","2","3")
+colnames(dates2) <- c("1", "2", "3")
+datae2 <- rbind(data2, dates2) 
+datae2[,1]<- seq(as.Date('2003-01-01'), length.out = nrow(datae2), by='month')
+```
+
+El plot con regresivo sería:
+
+```{r, warning=FALSE}
+ggplot()+
+  geom_line(aes(datae2[,1], log(datae2[,2]), colour ="Serie"), datae2)+
+  geom_line(aes(x=farimareg[,6], y=farimareg[,1], colour = "Predicción"), farimareg)
+```
+
+Este último modelo ARIMA no recoge muy bien el final de la serie, pero parece que se corrige poco a poco. 
+
+Como conclusión podemos decir que si que hemos podido predecir la venta de matriculas para los próximos 2 años, que aparentemente serán al alza. Y que la concesión de créditos si que afecta, como pudimos ver en transferencias, pero en regresivo el coeficiente es muy bajo.
